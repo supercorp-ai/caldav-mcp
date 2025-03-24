@@ -139,49 +139,66 @@ async function createCalendarObjectTool(args: { calendarUrl: string; data: strin
   }
   const { calendarUrl, data } = args
   const options = {
-    calendar: {
-      url: calendarUrl,
-      props: {}
-    },
+    calendar: { url: calendarUrl, props: {} },
     iCalString: data,
     filename: 'event.ics'
   }
   return await davClient.createCalendarObject(options)
 }
 
-async function updateCalendarObjectTool(args: { calendarObject: any; }) {
+/**
+ * Helper: Automatically fetch the current etag for a calendar object URL.
+ * It derives the calendar collection URL by removing the final segment from the event URL.
+ */
+async function getEtagForCalendarObject(eventUrl: string): Promise<string> {
   if (!davClient) {
     throw new Error('No DAV client configured. Run auth_google or auth_apple first.')
   }
-  return await davClient.updateCalendarObject(args as { calendarObject: any; })
+  const lastSlashIndex = eventUrl.lastIndexOf('/');
+  if (lastSlashIndex === -1) {
+    throw new Error('Invalid event URL.')
+  }
+  const calendarUrl = eventUrl.substring(0, lastSlashIndex + 1);
+  const response = await davClient.fetchCalendarObjects({ calendar: { url: calendarUrl, props: {} }, objectUrls: [eventUrl] } as any)
+  if (response && response.length > 0 && response[0].etag) {
+    return response[0].etag
+  }
+  throw new Error(`Etag not found for calendar object at ${eventUrl}`)
 }
 
-async function deleteCalendarObjectTool(args: { calendarObject: any; }) {
+async function updateCalendarObjectTool(args: { calendarObjectUrl: string; data: string; }) {
   if (!davClient) {
     throw new Error('No DAV client configured. Run auth_google or auth_apple first.')
   }
-  return await davClient.deleteCalendarObject(args as { calendarObject: any; })
+  const { calendarObjectUrl, data } = args
+  const etag = await getEtagForCalendarObject(calendarObjectUrl)
+  const calendarObject = { url: calendarObjectUrl, data, etag }
+  return await davClient.updateCalendarObject({ calendarObject })
+}
+
+async function deleteCalendarObjectTool(args: { calendarObjectUrl: string; }) {
+  if (!davClient) {
+    throw new Error('No DAV client configured. Run auth_google or auth_apple first.')
+  }
+  const { calendarObjectUrl } = args
+  const etag = await getEtagForCalendarObject(calendarObjectUrl)
+  const calendarObject = { url: calendarObjectUrl, etag }
+  return await davClient.deleteCalendarObject({ calendarObject })
 }
 
 /**
  * New Tool: Fetch calendar objects.
- * Instead of requiring the user to supply a DAVCalendar, this tool fetches all calendars
- * and uses the first one.
- *
  * Expects:
- *  - timeRange (optional): An object with timeRange.start and timeRange.end in ISO 8601 format.
+ *  - calendarUrl: The URL of the calendar.
+ *  - timeRange: An object with timeRange.start and timeRange.end in ISO 8601 format.
  */
-async function fetchCalendarObjectsTool(args: { timeRange?: { start: string; end: string } }) {
+async function fetchCalendarObjectsTool(args: { calendarUrl: string; timeRange: { start: string; end: string } }) {
   if (!davClient) {
     throw new Error('No DAV client configured. Run auth_google or auth_apple first.')
   }
-  const calendars = await davClient.fetchCalendars()
-  if (!calendars || calendars.length === 0) {
-    throw new Error('No calendars found.')
-  }
-  const calendar = calendars[0]  // Use the first calendar
-  const options: any = { calendar }
-  if (args.timeRange) options.timeRange = args.timeRange
+  const { calendarUrl, timeRange } = args
+  const calendar = { url: calendarUrl, props: {} }
+  const options: any = { calendar, timeRange }
   return await davClient.fetchCalendarObjects(options)
 }
 
@@ -278,31 +295,32 @@ function createMcpServer(): McpServer {
     }
   )
 
-  // server.tool(
-  //   'update_calendar_object',
-  //   'Update a calendar object. Provide calendarObject (with url, data, and etag).',
-  //   {
-  //     calendarObject: z.any()
-  //   },
-  //   async (args) => {
-  //     try {
-  //       const result = await updateCalendarObjectTool(args as { calendarObject: any })
-  //       return toTextJson(result)
-  //     } catch (err: any) {
-  //       return toTextJson({ error: String(err.message) })
-  //     }
-  //   }
-  // )
-  //
   server.tool(
-    'delete_calendar_object',
-    'Delete a calendar object. Provide calendarObject (with url and etag).',
+    'update_calendar_object',
+    'Update a calendar event. Provide calendarObjectUrl and new event data (ICS).',
     {
-      calendarObject: z.any()
+      calendarObjectUrl: z.string(),
+      data: z.string()
     },
     async (args) => {
       try {
-        const result = await deleteCalendarObjectTool(args as { calendarObject: any })
+        const result = await updateCalendarObjectTool(args as { calendarObjectUrl: string; data: string })
+        return toTextJson(result)
+      } catch (err: any) {
+        return toTextJson({ error: String(err.message) })
+      }
+    }
+  )
+
+  server.tool(
+    'delete_calendar_object',
+    'Delete a calendar event. Provide calendarObjectUrl.',
+    {
+      calendarObjectUrl: z.string()
+    },
+    async (args) => {
+      try {
+        const result = await deleteCalendarObjectTool(args as { calendarObjectUrl: string })
         return toTextJson(result)
       } catch (err: any) {
         return toTextJson({ error: String(err.message) })
@@ -312,13 +330,14 @@ function createMcpServer(): McpServer {
 
   server.tool(
     'fetch_calendar_objects',
-    'Fetch calendar objects from the first available calendar. Optionally provide timeRange with start and end in ISO 8601 format.',
+    'Fetch calendar objects from a given calendar. Provide calendarUrl and timeRange with start and end in ISO 8601 format.',
     {
-      timeRange: z.object({ start: z.string(), end: z.string() }).optional()
+      calendarUrl: z.string(),
+      timeRange: z.object({ start: z.string(), end: z.string() })
     },
     async (args) => {
       try {
-        const objects = await fetchCalendarObjectsTool(args as { timeRange?: { start: string; end: string } })
+        const objects = await fetchCalendarObjectsTool(args as { calendarUrl: string; timeRange: { start: string; end: string } })
         return toTextJson(objects)
       } catch (err: any) {
         return toTextJson({ error: String(err.message) })
