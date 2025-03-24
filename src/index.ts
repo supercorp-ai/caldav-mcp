@@ -152,18 +152,22 @@ async function createCalendarObjectTool(args: { calendarUrl: string; data: strin
  */
 async function getEtagForCalendarObject(eventUrl: string): Promise<string> {
   if (!davClient) {
-    throw new Error('No DAV client configured. Run auth_google or auth_apple first.')
+    throw new Error('No DAV client configured. Run auth_google or auth_apple first.');
   }
   const lastSlashIndex = eventUrl.lastIndexOf('/');
   if (lastSlashIndex === -1) {
-    throw new Error('Invalid event URL.')
+    throw new Error('Invalid event URL.');
   }
-  const calendarUrl = eventUrl.substring(0, lastSlashIndex + 1);
-  const response = await davClient.fetchCalendarObjects({ calendar: { url: calendarUrl, props: {} }, objectUrls: [eventUrl] } as any)
+  const collectionUrl = eventUrl.substring(0, lastSlashIndex + 1);
+  const response = await davClient.fetchCalendarObjects({
+    calendar: { url: collectionUrl, props: [{ name: 'getetag', namespace: DAVNamespace.DAV }] },
+    objectUrls: [ eventUrl ],
+    depth: "1" as DAVDepth
+  } as any);
   if (response && response.length > 0 && response[0].etag) {
-    return response[0].etag
+    return response[0].etag;
   }
-  throw new Error(`Etag not found for calendar object at ${eventUrl}`)
+  throw new Error(`Etag not found for calendar object at ${eventUrl}`);
 }
 
 async function updateCalendarObjectTool(args: { calendarObjectUrl: string; data: string; }) {
