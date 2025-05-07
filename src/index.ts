@@ -260,7 +260,10 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
   server.tool(
     `${toolsPrefix}auth_url_google`,
     'Return an OAuth URL for Google Calendar (visit this URL to grant access).',
-    {},
+    {
+      // TODO: MCP SDK bug patch - remove when fixed
+      comment: z.string().optional(),
+    },
     async () => {
       try {
         // Create a local OAuth2 client for generating the URL.
@@ -309,7 +312,10 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
   server.tool(
     `${toolsPrefix}fetch_calendars`,
     'Fetch all calendars for the authenticated account.',
-    {},
+    {
+      // TODO: MCP SDK bug patch - remove when fixed
+      comment: z.string().optional(),
+    },
     async () => {
       try {
         const calendars = await fetchCalendarsTool(storage, config, memoryKey);
