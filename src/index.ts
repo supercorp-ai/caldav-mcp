@@ -303,7 +303,7 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
 
   server.tool(
     `${toolsPrefix}auth_url_google`,
-    'Return an OAuth URL for Google Calendar (includes openid+email so we can derive the account automatically).',
+    'Return an OAuth URL for Google Calendar.',
     {
       // TODO: MCP SDK bug patch - remove when fixed
       comment: z.string().optional(),
@@ -330,7 +330,7 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
 
   server.tool(
     `${toolsPrefix}auth_google`,
-    'Authenticate for Google Calendar. Provide auth code (account/email optional for backward compatibility).',
+    'Authenticate for Google Calendar. This will be called automatically after user clicks auth_url_google, no need to manually call it.',
     { code: z.string(), account: z.string().optional() }, // <-- Zod shape (not z.object)
     async (args: { code: string; account?: string }) => {
       try {
