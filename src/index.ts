@@ -28,6 +28,21 @@ function toTextJson(data: unknown): { content: Array<{ type: 'text'; text: strin
   };
 }
 
+// Minimal fetch wrapper to keep TS happy in Node projects without DOM lib
+async function fetchUserinfoEmail(accessToken: string): Promise<string | undefined> {
+  try {
+    const f: any = (globalThis as any).fetch ?? (await import('node-fetch')).default;
+    const resp = await f('https://openidconnect.googleapis.com/v1/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!resp?.ok) return undefined;
+    const ui = await resp.json();
+    return typeof ui?.email === 'string' ? ui.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // --------------------------------------------------------------------
 // Configuration & Storage Interface
 // --------------------------------------------------------------------
@@ -58,7 +73,6 @@ class MemoryStorage implements Storage {
     return this.storage[memoryKey];
   }
   async set(memoryKey: string, data: Record<string, any>) {
-    // Merge new data with existing data so that previously stored credentials are preserved.
     this.storage[memoryKey] = { ...this.storage[memoryKey], ...data };
   }
 }
@@ -101,7 +115,7 @@ class RedisStorage implements Storage {
 
 // Google CalDAV Authentication
 async function authGoogle(
-  args: { account: string; code: string },
+  args: { code: string; account?: string }, // account optional (back-compat)
   config: Config,
   storage: Storage,
   memoryKey: string
@@ -112,8 +126,36 @@ async function authGoogle(
     throw new Error('No refresh token returned by Google.');
   }
   client.setCredentials(tokens);
-  await storage.set(memoryKey, { provider: 'google', account: args.account, refreshToken: tokens.refresh_token });
-  return { success: true, provider: 'google', account: args.account };
+
+  // Determine email (account)
+  let email = (args.account || '').trim() || undefined;
+
+  // Prefer ID token (requires scopes: openid email)
+  if (!email && tokens.id_token) {
+    try {
+      const ticket = await client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: config.googleClientId
+      });
+      email = ticket.getPayload()?.email ?? undefined;
+    } catch {
+      // ignore and try userinfo
+    }
+  }
+
+  // Fallback to OIDC UserInfo
+  if (!email && tokens.access_token) {
+    email = await fetchUserinfoEmail(tokens.access_token);
+  }
+
+  if (!email) {
+    throw new Error(
+      'Could not determine account email from OAuth response. Ensure the auth URL includes "openid email", or pass "account" explicitly (legacy behavior).'
+    );
+  }
+
+  await storage.set(memoryKey, { provider: 'google', account: email, refreshToken: tokens.refresh_token });
+  return { success: true, provider: 'google', account: email };
 }
 
 // Apple CalDAV Authentication
@@ -191,7 +233,6 @@ async function createCalendarObjectTool(
 
 /**
  * Helper: Automatically fetch the current etag for a calendar object.
- * It derives the calendar collection URL by removing the final segment from the event URL.
  */
 async function getEtagForCalendarObject(
   eventUrl: string,
@@ -201,18 +242,14 @@ async function getEtagForCalendarObject(
 ): Promise<string> {
   const client = await getDAVClient(config, storage, memoryKey);
   const lastSlashIndex = eventUrl.lastIndexOf('/');
-  if (lastSlashIndex === -1) {
-    throw new Error('Invalid event URL.');
-  }
+  if (lastSlashIndex === -1) throw new Error('Invalid event URL.');
   const collectionUrl = eventUrl.substring(0, lastSlashIndex + 1);
   const response = await client.fetchCalendarObjects({
     calendar: { url: collectionUrl, props: [{ name: 'getetag', namespace: DAVNamespace.DAV }] },
     objectUrls: [ eventUrl ],
     depth: "1" as DAVDepth
   } as any);
-  if (response && response.length > 0 && response[0].etag) {
-    return response[0].etag;
-  }
+  if (response && response.length > 0 && response[0].etag) return response[0].etag;
   throw new Error(`Etag not found for calendar object at ${eventUrl}`);
 }
 
@@ -266,19 +303,22 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
 
   server.tool(
     `${toolsPrefix}auth_url_google`,
-    'Return an OAuth URL for Google Calendar (visit this URL to grant access).',
+    'Return an OAuth URL for Google Calendar (includes openid+email so we can derive the account automatically).',
     {
       // TODO: MCP SDK bug patch - remove when fixed
       comment: z.string().optional(),
     },
     async () => {
       try {
-        // Create a local OAuth2 client for generating the URL.
         const client = new OAuth2Client(config.googleClientId, config.googleClientSecret, config.googleRedirectUri);
         const url = client.generateAuthUrl({
           access_type: 'offline',
           prompt: 'consent',
-          scope: ['https://www.googleapis.com/auth/calendar'],
+          scope: [
+            'openid',
+            'email',
+            'https://www.googleapis.com/auth/calendar'
+          ].join(' '),
           state: config.googleState
         });
         return toTextJson({ authUrl: url });
@@ -290,9 +330,9 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
 
   server.tool(
     `${toolsPrefix}auth_google`,
-    'Authenticate for Google Calendar. Provide account (email) and auth code.',
-    { account: z.string(), code: z.string() },
-    async (args: { account: string; code: string }) => {
+    'Authenticate for Google Calendar. Provide auth code (account/email optional for backward compatibility).',
+    { code: z.string(), account: z.string().optional() }, // <-- Zod shape (not z.object)
+    async (args: { code: string; account?: string }) => {
       try {
         const result = await authGoogle(args, config, storage, memoryKey);
         return toTextJson(result);
