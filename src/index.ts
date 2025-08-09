@@ -330,7 +330,7 @@ function createMcpServer(memoryKey: string, config: Config, toolsPrefix: string)
 
   server.tool(
     `${toolsPrefix}auth_google`,
-    'Authenticate for Google Calendar. This will be called automatically after user clicks auth_url_google, no need to manually call it.',
+    'Authenticate for Google Calendar with code. Do not ask user for this code. This will be called automatically after user clicks url from auth_url_google.',
     { code: z.string(), account: z.string().optional() }, // <-- Zod shape (not z.object)
     async (args: { code: string; account?: string }) => {
       try {
